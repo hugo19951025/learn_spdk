@@ -1,0 +1,117 @@
+result:
+hugo@hugo:~/learn_spdk/spdk$ lsblk
+NAME    MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+loop0     7:0    0     4K  1 loop /snap/bare/5
+loop1     7:1    0    74M  1 loop /snap/core22/2163
+loop2     7:2    0 250.6M  1 loop /snap/firefox/7423
+loop3     7:3    0  16.4M  1 loop /snap/firmware-updater/216
+loop4     7:4    0    74M  1 loop /snap/core22/2193
+loop5     7:5    0 250.8M  1 loop /snap/firefox/7559
+loop6     7:6    0   516M  1 loop /snap/gnome-42-2204/202
+loop7     7:7    0  18.5M  1 loop /snap/firmware-updater/210
+loop8     7:8    0 516.2M  1 loop /snap/gnome-42-2204/226
+loop9     7:9    0  91.7M  1 loop /snap/gtk-common-themes/1535
+loop10    7:10   0  10.8M  1 loop /snap/snap-store/1270
+loop11    7:11   0  50.9M  1 loop /snap/snapd/25577
+loop12    7:12   0  48.1M  1 loop /snap/snapd/25935
+loop13    7:13   0   576K  1 loop /snap/snapd-desktop-integration/315
+sda       8:0    0    30G  0 disk 
+├─sda1    8:1    0     1M  0 part 
+└─sda2    8:2    0    30G  0 part /
+nvme0n1 259:0    0    20G  0 disk  << 20G SSD固态硬盘 使用Nvme协议
+
+===========================================
+nvme0n1 从内核中退出 被spdk绑定
+===========================================
+
+###########
+绑定前检查状态
+###########
+hugo@hugo:~/learn_spdk/spdk$ sudo scripts/setup.sh status
+Hugepages
+node     hugesize     free /  total
+node0   1048576kB        0 /      0
+node0      2048kB        0 /      0
+
+Type                      BDF             Vendor Device NUMA    Driver           Device     Block devices
+NVMe                      0000:03:00.0    15ad   07f0   unknown nvme             nvme0      nvme0n1
+
+###########
+绑定
+###########
+hugo@hugo:~/learn_spdk/spdk$ sudo scripts/setup.sh
+0000:03:00.0 (15ad 07f0): nvme -> uio_pci_generic
+
+###########
+绑定后检查状态
+###########
+hugo@hugo:~/learn_spdk/spdk$ sudo scripts/setup.sh status
+Hugepages
+node     hugesize     free /  total
+node0   1048576kB        0 /      0
+node0      2048kB     1024 /   1024
+
+Type                      BDF             Vendor Device NUMA    Driver           Device     Block devices
+NVMe                      0000:03:00.0    15ad   07f0   unknown uio_pci_generic  -          -
+
+
+hugo@hugo:~/learn_spdk/spdk$ lsblk
+NAME   MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+loop0    7:0    0     4K  1 loop /snap/bare/5
+loop1    7:1    0    74M  1 loop /snap/core22/2163
+loop2    7:2    0 250.6M  1 loop /snap/firefox/7423
+loop3    7:3    0  16.4M  1 loop /snap/firmware-updater/216
+loop4    7:4    0    74M  1 loop /snap/core22/2193
+loop5    7:5    0 250.8M  1 loop /snap/firefox/7559
+loop6    7:6    0   516M  1 loop /snap/gnome-42-2204/202
+loop7    7:7    0  18.5M  1 loop /snap/firmware-updater/210
+loop8    7:8    0 516.2M  1 loop /snap/gnome-42-2204/226
+loop9    7:9    0  91.7M  1 loop /snap/gtk-common-themes/1535
+loop10   7:10   0  10.8M  1 loop /snap/snap-store/1270
+loop11   7:11   0  50.9M  1 loop /snap/snapd/25577
+loop12   7:12   0  48.1M  1 loop /snap/snapd/25935
+loop13   7:13   0   576K  1 loop /snap/snapd-desktop-integration/315
+sda      8:0    0    30G  0 disk 
+├─sda1   8:1    0     1M  0 part 
+└─sda2   8:2    0    30G  0 part /
+
+
+##########
+官方测试程序
+##########
+hugo@hugo:~/learn_spdk/spdk$ sudo build/examples/hello_world
+EAL: '-c <coremask>' option is deprecated, and will be removed in a future release
+EAL:    Use '-l <corelist>' or '--lcores=<corelist>' option instead
+Initializing NVMe Controllers
+Attaching to 0000:03:00.0
+Attached to 0000:03:00.0
+  Namespace ID: 1 size: 21GB
+Initialization complete.
+INFO: using host memory buffer for IO
+Hello world!
+
+
+hugo@hugo:~/learn_spdk/spdk$ ./scripts/gen_nvme.sh --json-with-subsystems > ./build/examples/hello_bdev.json
+hugo@hugo:~/learn_spdk/spdk$ cd ./build/examples/
+hugo@hugo:~/learn_spdk/spdk/build/examples$ ls
+abort        bdevperf  hello_bdev       hello_fsdev  hotplug        led          nvmf             thread
+accel_perf   blobcli   hello_bdev.json  hello_sock   interrupt_tgt  lsvmd        pmr_persistence  verify
+arbitration  cmb_copy  hello_blob       hello_world  ioat_perf      nvme_manage  reconnect        zipf
+hugo@hugo:~/learn_spdk/spdk/build/examples$ cat ./hello_bdev.json 
+{
+"subsystems": [
+{
+"subsystem": "bdev",
+"config": [
+{
+"method": "bdev_nvme_attach_controller",
+"params": {
+"trtype": "PCIe",
+"name":"Nvme0",
+"traddr":"0000:03:00.0"
+}
+}
+]
+}
+]
+}
