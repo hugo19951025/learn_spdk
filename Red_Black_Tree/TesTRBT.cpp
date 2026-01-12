@@ -41,8 +41,15 @@ void testRBTree() {
     std::cout << "中序遍历: ";
     tree.inOrder();
     
+
+    // 测试修改
+    std::cout << "\n修改元素 1->26 为 1->21" << std::endl;
+    tree.modify(1, 21);
+    std::cout << "中序遍历: ";
+    tree.inOrder();
+
     // 验证删除后的性质
-    std::cout << "验证红黑树性质: " 
+    std::cout << "\n验证红黑树性质: " 
               << (tree.verifyRBProperties() ? "通过" : "失败") << std::endl;
 }
 
