@@ -1,0 +1,49 @@
+###############################
+服务端
+###############################
+
+
+hugo@hugo:~/learn_spdk/spdk_echo_server$ ls
+client  client.cpp  Makefile  spdk_server  spdk_server.c  spdk_server.d  spdk_server.o
+hugo@hugo:~/learn_spdk/spdk_echo_server$ ./spdk_server -P 8888 -H 0.0.0.0 -N posix
+spdk_app_parse_args
+spdk_server_app_parse: 8888
+spdk_server_app_parse: 0.0.0.0
+spdk_server_app_parse: posix
+spdk_app_parse_args 11
+host: 0.0.0.0, port: 8888, impl_name: posix
+[2026-01-13 13:49:26.428067] Starting SPDK v26.01-pre git sha1 d242896d6 / DPDK 25.07.0 initialization...
+[2026-01-13 13:49:26.428139] [ DPDK EAL parameters: spdk_server --no-shconf -c 0x1 -m 512 --no-huge --legacy-mem --iova-mode=va --no-telemetry --log-level=lib.eal:6 --log-level=lib.cryptodev:5 --log-level=lib.power:5 --log-level=user1:6 --base-virtaddr=0x200000000000 --file-prefix=spdk_pid12882 ]
+EAL: '-c <coremask>' option is deprecated, and will be removed in a future release
+EAL:    Use '-l <corelist>' or '--lcores=<corelist>' option instead
+[2026-01-13 13:49:26.554675] app.c: 970:spdk_app_start: *NOTICE*: Total cores available: 1
+[2026-01-13 13:49:26.597378] reactor.c: 996:reactor_run: *NOTICE*: Reactor started on core 0
+sdpk_server_start
+spdk_server_listen
+spdk_server_accept
+spdk_server_accept
+spdk_server_accept
+[2026-01-13 13:49:54.597775] spdk_server.c: 106:spdk_server_callback: *NOTICE*: Connection closed
+spdk_server_accept
+spdk_server_accept
+spdk_server_accept
+^Cspdk_server_accept
+^Z
+[1]+  已停止               ./spdk_server -P 8888 -H 0.0.0.0 -N posix
+hugo@hugo:~/learn_spdk/spdk_echo_server$ ps aux | grep spdk
+hugo       12882 84.3  0.2 587184 75408 pts/7    TLl  13:49   0:53 ./spdk_server -P 8888 -H 0.0.0.0 -N posix
+hugo       13593  0.0  0.0   9304  2396 pts/7    S+   13:50   0:00 grep --color=auto spdk
+
+
+
+###############################
+客户端
+###############################
+hugo@hugo:~/learn_spdk/spdk_echo_server$ ./client 
+Connecting to 127.0.0.1:8888
+Connected successfully!
+Sending message: Hello SPDK Server!
+Sent 18 bytes
+Received echo: Hello SPDK Server!
+Connection closed
+hugo@hugo:~/learn_spdk/spdk_echo_server$ 

@@ -1,12 +1,15 @@
-SPDK_ROOT_DIR := $(abspath $(CURDIR)/../spdk)
-include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
-include $(SPDK_ROOT_DIR)/mk/spdk.modules.mk
+all: server client
 
-APP = spdk_server
+# 构建服务器
+server:
+	$(MAKE) -f Makefile.server
+	rm -f spdk_server.d spdk_server.o
 
-C_SRCS := spdk_server.c
+# 构建客户端
+client:
+	$(MAKE) -f Makefile.client
 
-SPDK_LIB_LIST = $(SOCK_MODULES_LIST)
-SPDK_LIB_LIST += event sock
-
-include $(SPDK_ROOT_DIR)/mk/spdk.app.mk
+# 清理所有
+clean:
+	$(MAKE) -f Makefile.server clean
+	$(MAKE) -f Makefile.client clean
