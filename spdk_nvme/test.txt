@@ -1,0 +1,22 @@
+hugo@hugo:~/learn_spdk/spdk_nvme$ make
+  CC spdk_nvme/nvme_opera.o
+  LINK nvme_opera
+hugo@hugo:~/learn_spdk/spdk_nvme$ sudo ./nvme_opera 
+EAL: '-c <coremask>' option is deprecated, and will be removed in a future release
+EAL:    Use '-l <corelist>' or '--lcores=<corelist>' option instead
+spdk_env_init res: 0
+nvme_opera_probe_callback
+nvme_opera_attach_callback
+name space num: 64
+nsid: 1 name space size: 20GB
+
+
+nvme_opera_write cb finished
+nvme_opera_write successful
+
+
+nvme_opera_read cb finished
+nvme_opera_write successful: The test for spdk, 555, 1025, KKK
+
+
+hugo@hugo:~/learn_spdk/spdk_nvme$ 
