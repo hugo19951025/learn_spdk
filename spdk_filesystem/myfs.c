@@ -24,10 +24,10 @@
 #include <stdint.h>
 
 
-#define BDEV_NAME_LENGTH 512
+#define BDEV_NAME_LENGTH 128
 #define ALIGN_4k 0x1000
-#define SPDK_RPC_STARTUP	0x1
-#define SPDK_RPC_RUNTIME	0x2
+#define FILENAME_LENGTH 128
+
 
 struct myfs_blob_context_t {
     char bdev_name[BDEV_NAME_LENGTH];
@@ -42,7 +42,75 @@ struct myfs_blob_context_t {
     uint8_t *read_buff;
     uint64_t io_unit_size;
 
+    bool done;
+
 };
+
+typedef struct myfs_file_s {
+    char filename[FILENAME_LENGTH];
+    struct spdk_bs_dev *bdev;
+    struct spdk_blob_store *bs;
+    spdk_blob_id blobid;
+    struct spdk_blob* blob;
+    int flags;
+    int offset;
+}myfs_file_t;
+
+typedef struct myfs_file_operation_s {
+    int (*create)(struct myfs_file_s *file);
+    int (*open)(struct myfs_file_s *file);
+    int (*write)(struct myfs_file_s *file, void* buf, size_t size);
+    int (*read)(struct myfs_file_s *file, void* buf, size_t size);
+
+    off_t (*lseek)(struct myfs_file_s *file, off_t offset, int whence);
+
+    int (*close)(struct myfs_file_s *file);
+    int (*release)(struct myfs_file_s *file);
+
+}myfs_file_operation_t;
+
+
+
+/*
+#################################
+posix api
+#################################
+*/
+int myfs_file_create(struct myfs_file_s *file){
+    return 0;
+}
+int myfs_file_open(struct myfs_file_s *file) {
+    return 0;
+}
+int myfs_file_write(struct myfs_file_s *file, void* buf, size_t size) {
+    return 0;
+}
+int myfs_file_read(struct myfs_file_s *file, void* buf, size_t size) {
+    return 0;
+}
+
+off_t myfs_file_lseek(struct myfs_file_s *file, off_t offset, int whence) {
+    return 0;
+}
+
+int myfs_file_close(struct myfs_file_s *file) {
+    return 0;
+}
+int myfs_file_release(struct myfs_file_s *file) {
+    return 0;
+}
+
+struct myfs_file_operation_s myfs_file_opera = {
+    .create = myfs_file_create,
+    .open = myfs_file_open,
+    .write = myfs_file_write,
+    .read = myfs_file_read,
+    .lseek = myfs_file_lseek,
+    .close = myfs_file_close,
+    .release = myfs_file_release
+};
+
+
 
 typedef struct myfs_s {
     struct spdk_thread* thread;
@@ -51,169 +119,6 @@ typedef struct myfs_s {
 struct myfs_s* fs = NULL;
 static const int POLLER_MAX_TIME = 1e8;
 static const char* json_file = "/home/hugo/learn_spdk/spdk_filesystem/myfs.json";
-
-#if 0
-struct load_json_config_ctx;
-typedef void (*client_resp_handler)(struct load_json_config_ctx *,
-				    struct spdk_jsonrpc_client_response *);
-
-#define RPC_SOCKET_PATH_MAX SPDK_SIZEOF_MEMBER(struct sockaddr_un, sun_path)
-
-/* 1s connections timeout */
-#define RPC_CLIENT_CONNECT_TIMEOUT_US (1U * 1000U * 1000U)
-
-/*
- * Currently there is no timeout in SPDK for any RPC command. This result that
- * we can't put a hard limit during configuration load as it most likely randomly fail.
- * So just print WARNLOG every 10s. */
-#define RPC_CLIENT_REQUEST_TIMEOUT_US (10U * 1000 * 1000)
-
-
-struct load_json_config_ctx {
-	/* Thread used during configuration. */
-	struct spdk_thread *thread;
-	spdk_subsystem_init_fn cb_fn;
-	void *cb_arg;
-	bool stop_on_error;
-
-	/* Current subsystem */
-	struct spdk_json_val *subsystems; /* "subsystems" array */
-	struct spdk_json_val *subsystems_it; /* current subsystem array position in "subsystems" array */
-
-	struct spdk_json_val *subsystem_name; /* current subsystem name */
-
-	/* Current "config" entry we are processing */
-	struct spdk_json_val *config; /* "config" array */
-	struct spdk_json_val *config_it; /* current config position in "config" array */
-
-	/* Current request id we are sending. */
-	uint32_t rpc_request_id;
-
-	/* Whole configuration file read and parsed. */
-	size_t json_data_size;
-	char *json_data;
-
-	size_t values_cnt;
-	struct spdk_json_val *values;
-
-	char rpc_socket_path_temp[RPC_SOCKET_PATH_MAX + 1];
-
-	struct spdk_jsonrpc_client *client_conn;
-	struct spdk_poller *client_conn_poller;
-
-	client_resp_handler client_resp_cb;
-
-	/* Timeout for current RPC client action. */
-	uint64_t timeout;
-};
-
-static int
-rpc_client_connect_poller(void *_ctx)
-{
-	struct load_json_config_ctx *ctx = _ctx;
-	int rc;
-
-	rc = spdk_jsonrpc_client_poll(ctx->client_conn, 0);
-	if (rc != -ENOTCONN) {
-		/* We are connected. Start regular poller and issue first request */
-		spdk_poller_unregister(&ctx->client_conn_poller);
-		ctx->client_conn_poller = SPDK_POLLER_REGISTER(rpc_client_poller, ctx, 100);
-		app_json_config_load_subsystem(ctx);
-	} else {
-		rc = rpc_client_check_timeout(ctx);
-		if (rc) {
-			app_json_config_load_done(ctx, rc);
-		}
-
-		return SPDK_POLLER_IDLE;
-	}
-
-	return SPDK_POLLER_BUSY;
-}
-
-
-static void
-spdk_subsystem_init_from_json_config(const char *json_config_file, const char *rpc_addr,
-				     spdk_subsystem_init_fn cb_fn, void *cb_arg,
-				     bool stop_on_error)
-{
-	struct load_json_config_ctx *ctx = calloc(1, sizeof(*ctx));
-	int rc;
-
-	assert(cb_fn);
-	if (!ctx) {
-		cb_fn(-ENOMEM, cb_arg);
-		return;
-	}
-
-	ctx->cb_fn = cb_fn;
-	ctx->cb_arg = cb_arg;
-	ctx->stop_on_error = stop_on_error;
-	ctx->thread = spdk_get_thread();
-
-	rc = app_json_config_read(json_config_file, ctx);
-	if (rc) {
-		goto fail;
-	}
-
-	/* Capture subsystems array */
-	rc = spdk_json_find_array(ctx->values, "subsystems", NULL, &ctx->subsystems);
-	switch (rc) {
-	case 0:
-		/* Get first subsystem */
-		ctx->subsystems_it = spdk_json_array_first(ctx->subsystems);
-		if (ctx->subsystems_it == NULL) {
-			SPDK_NOTICELOG("'subsystems' configuration is empty\n");
-		}
-		break;
-	case -EPROTOTYPE:
-		SPDK_ERRLOG("Invalid JSON configuration: not enclosed in {}.\n");
-		goto fail;
-	case -ENOENT:
-		SPDK_WARNLOG("No 'subsystems' key JSON configuration file.\n");
-		break;
-	case -EDOM:
-		SPDK_ERRLOG("Invalid JSON configuration: 'subsystems' should be an array.\n");
-		goto fail;
-	default:
-		SPDK_ERRLOG("Failed to parse JSON configuration.\n");
-		goto fail;
-	}
-
-	/* If rpc_addr is not an Unix socket use default address as prefix. */
-	if (rpc_addr == NULL || rpc_addr[0] != '/') {
-		rpc_addr = SPDK_DEFAULT_RPC_ADDR;
-	}
-
-	/* FIXME: rpc client should use socketpair() instead of this temporary socket nonsense */
-	rc = snprintf(ctx->rpc_socket_path_temp, sizeof(ctx->rpc_socket_path_temp), "%s.%d_config",
-		      rpc_addr, getpid());
-	if (rc >= (int)sizeof(ctx->rpc_socket_path_temp)) {
-		SPDK_ERRLOG("Socket name create failed\n");
-		goto fail;
-	}
-
-	rc = spdk_rpc_initialize(ctx->rpc_socket_path_temp, NULL);
-	if (rc) {
-		goto fail;
-	}
-
-	ctx->client_conn = spdk_jsonrpc_client_connect(ctx->rpc_socket_path_temp, AF_UNIX);
-	if (ctx->client_conn == NULL) {
-		SPDK_ERRLOG("Failed to connect to '%s'\n", ctx->rpc_socket_path_temp);
-		goto fail;
-	}
-
-	rpc_client_set_timeout(ctx, RPC_CLIENT_CONNECT_TIMEOUT_US);
-	ctx->client_conn_poller = SPDK_POLLER_REGISTER(rpc_client_connect_poller, ctx, 100);
-	return;
-
-fail:
-	app_json_config_load_done(ctx, -EINVAL);
-}
-
-
-#endif
 
 
 static void myfs_bdev_event_callback(enum spdk_bdev_event_type type, struct spdk_bdev* bdev, void* event_ctx) {
@@ -248,7 +153,8 @@ static void myfs_blob_read_complete(void* cb_arg, int bserrno) {
     struct myfs_blob_context_t* myfs_ctx = (struct myfs_blob_context_t*)cb_arg;
     SPDK_NOTICELOG("read complete %s\n", myfs_ctx->read_buff);
 
-    myfs_blob_destory(myfs_ctx);
+    //myfs_blob_destory(myfs_ctx);
+    myfs_ctx->done = true;
     //spdk_app_stop(0);
 }
 
@@ -329,7 +235,6 @@ static void spdk_bs_get_super_complete(void* cb_arg, spdk_blob_id blobid, int bs
         SPDK_ERRLOG("Super blob get failed, bserrno %d\n", bserrno);
         if (bserrno == -ENOENT) {
             spdk_bs_create_blob(myfs_ctx->bs, spdk_blob_create_complete, myfs_ctx);
-            SPDK_NOTICELOG("spdk_bs_create_blob\n");
         }
     } else {
         spdk_bs_open_blob(myfs_ctx->bs, myfs_ctx->blobid, spdk_blob_open_complete, myfs_ctx);
@@ -363,8 +268,7 @@ static void myfs_blob_start(void* ctx) {
     // 并提供统一接口来操作这些数据单元
     int rc = spdk_bdev_create_bs_dev_ext(bdev_name, myfs_bdev_event_callback, NULL, &bs_dev);
     if (rc != 0) {
-        spdk_app_stop(-1);
-        return;
+        exit(1);
     }
 
     spdk_bs_init(bs_dev, NULL, myfs_blob_init_complete, myfs_ctx);
@@ -377,6 +281,7 @@ static bool poller(struct spdk_thread* thread, spdk_msg_fn fn, void* ctx, bool* 
     spdk_thread_send_msg(thread, fn, ctx);
     do {
         spdk_thread_poll(thread, 0, 0);
+        poller_count++;
     } while (!(*done) && poller_count < POLLER_MAX_TIME);
 
     if (!(*done) && poller_count >= POLLER_MAX_TIME) {
@@ -392,11 +297,8 @@ static void json_app_load_done(int rc, void *cb_arg) {
 }
 
 static void setup_spdk_json_app(void* cb_arg) {
-    SPDK_NOTICELOG("setup_spdk_json_app--->start\n");
     spdk_subsystem_init_from_json_config_temp(json_file, SPDK_DEFAULT_RPC_ADDR, json_app_load_done, cb_arg, true);
-    SPDK_NOTICELOG("setup_spdk_json_app--->end\n");
 }
-
 
 static int myfs_spdk_env_init(void) {
     struct spdk_env_opts opts = {};
@@ -442,6 +344,15 @@ static int myfs_spdk_env_init(void) {
     return 0;
 }
 
+
+
+
+
+
+
+
+
+
 #if 0
 int main (int argc, char* argv[]) {
     struct spdk_app_opts opts = {};
@@ -472,8 +383,8 @@ int main(int argc, char* argv[]) {
 
     struct myfs_blob_context_t *myfs_ctx = calloc(1, sizeof(struct myfs_blob_context_t));
     if (myfs_ctx != NULL) {
-        bool finished = false;
-        poller(fs->thread, myfs_blob_start, myfs_ctx, &finished);
+        myfs_ctx->done = false;
+        poller(fs->thread, myfs_blob_start, myfs_ctx, &myfs_ctx->done);
     }
 
     SPDK_NOTICELOG("spdk myfs_blob_start--->\n");
