@@ -14,6 +14,7 @@
 #include "spdk/jsonrpc.h"
 #include "spdk/rpc.h"
 #include "spdk/string.h"
+#include "../spdk/lib/blob/blobstore.h"
 
 #include "spdk/thread.h"
 
@@ -27,9 +28,12 @@
 #define BDEV_NAME_LENGTH 128
 #define ALIGN_4k 0x1000
 #define FILENAME_LENGTH 128
+#define MAX_FD_COUNT 1024
+#define DEFAULT_FD_NUM 3
+#define FD_TABLE_SIZE MAX_FD_COUNT / 8
 /*
 ###########################################
-define fs file
+define fs file structure
 ###########################################
 */
 struct myfs_blob_context_t {
@@ -60,9 +64,19 @@ typedef struct myfs_s {
 }myfs_t;
 
 typedef struct myfs_operation_s {
-    void (*alloc)(struct myfs_s* fs);
-    void (*free)(struct myfs_s* fs);
+    void (*alloc)(void* arg);
+    void (*free)(void* arg);
 }myfs_operation_t;
+
+
+typedef enum myfs_file_status_s {
+    FILE_CREATE,
+    FILE_OPEN,
+    FILE_WRITE,
+    FILE_READ,
+    FILE_CLOSE,
+    FILE_RELEASE
+}myfs_file_status_t;
 
 typedef struct myfs_file_s {
     char filename[FILENAME_LENGTH];
@@ -71,6 +85,8 @@ typedef struct myfs_file_s {
     struct spdk_blob* blob;
     int flags;
     int offset;
+    int ret;
+    int status;
     bool done;
 }myfs_file_t;
 
@@ -87,10 +103,54 @@ typedef struct myfs_file_operation_s {
 
 }myfs_file_operation_t;
 
+typedef struct myfs_file_rwctx_s {
+     struct myfs_file_s* file;
+     void* buf;
+     size_t size;
+}myfs_file_rwctx_t;
 
 struct myfs_s* fs = NULL;
 static const int POLLER_MAX_TIME = 1e8;
 static const char* json_file = "/home/hugo/learn_spdk/spdk_filesystem/myfs.json";
+static unsigned char fd_table[FD_TABLE_SIZE] = {0};
+static struct myfs_file_s* files[MAX_FD_COUNT] = {0};
+
+/*
+#################################
+vfs external api
+#################################
+*/
+
+int myfs_create(const char *filename, int flag);
+int myfs_open(const char *filename, int flag);
+size_t myfs_write(int fd, void *buf, size_t count);
+size_t myfs_read(int fd, void *buf, size_t count);
+int myfs_close(int fs);
+
+
+/*
+#################################
+spdk internal api
+#################################
+*/
+
+static int get_fd_from_bitmap(void) {
+    int fd = DEFAULT_FD_NUM;
+    while(fd < MAX_FD_COUNT) {
+        if ((fd_table[fd/8] & (0x1 << (fd % 8))) == 0) {
+            fd_table[fd/8] |= (0x1 << (fd % 8));
+            return fd;
+        }
+        fd++;
+    }
+    return -1;
+}
+
+static int set_fd_to_bitmap(int fd) {
+    if (fd >= MAX_FD_COUNT) return -1;
+    fd_table[fd/8] &= ~(0x1 << (fd % 8));
+    return 0;
+}
 
 static bool poller(struct spdk_thread* thread, spdk_msg_fn fn, void* ctx, bool* done) {
     
@@ -119,6 +179,7 @@ static void myfs_blob_open_complete(void* arg, struct spdk_blob* blob, int bserr
     struct myfs_file_s* myfile = arg;
 
     myfile->blob = blob;
+    myfile->blobid = blob->id;
     uint64_t numfreed = spdk_bs_free_cluster_count(fs->bs);
     SPDK_NOTICELOG("spdk_blob_open_complete----> numfreed: %lu\n", numfreed);
 
@@ -136,7 +197,6 @@ static void myfs_blob_create_complete(void* arg, spdk_blob_id blobid, int bserrn
 
 static void myfs_bs_get_super_complete(void* arg, spdk_blob_id blobid, int bserrno) {
     struct myfs_file_s* myfile = arg;
-    myfile->blobid = blobid;
 
     if (bserrno) {
         SPDK_ERRLOG("Super blob get failed, bserrno %d\n", bserrno);
@@ -148,41 +208,125 @@ static void myfs_bs_get_super_complete(void* arg, spdk_blob_id blobid, int bserr
     }
 }
 
+static void myfs_file_write_complete(void* arg, int bserrno) {
+    SPDK_NOTICELOG("myfs_file_write_complete---->bserrno: %d\n", bserrno);
+    struct myfs_file_s* myfile = arg;
+    myfile->done = true;
+}
+
+static void myfs_file_read_complete(void* arg, int bserrno) {
+    SPDK_NOTICELOG("myfs_file_read_complete---->bserrno: %d\n", bserrno);
+    struct myfs_file_s* myfile = arg;
+    myfile->done = true;
+
+}
+
+static void myfs_file_release_complete(void* arg, int bserrno) {
+    SPDK_NOTICELOG("myfs_file_release_complete---->bserrno: %d\n", bserrno);
+    struct myfs_file_s* myfile = arg;
+    myfile->done = true;
+}
+
+static void myfs_file_close_complete(void* arg, int bserrno) {
+    SPDK_NOTICELOG("myfs_file_close_complete---->bserrno: %d\n", bserrno);
+    struct myfs_file_s* myfile = arg;
+    if (myfile->status == FILE_CLOSE) {
+        myfile->done = true;
+    } else if (myfile->status == FILE_RELEASE) {
+        spdk_bs_delete_blob(fs->bs, myfile->blobid, myfs_file_release_complete, myfile);
+    }
+}
+
 
 static void do_create(void* arg) {
     struct myfs_file_s* myfile = arg;
+    myfile->status = FILE_CREATE;
     spdk_bs_get_super(fs->bs, myfs_bs_get_super_complete, myfile);
+}
+
+static void do_open(void* arg) {
+    struct myfs_file_s* myfile = arg;
+    if (myfile->blobid == 0) {
+        myfile->ret = -1;
+        return;
+    }
+    myfile->status = FILE_OPEN;
+    spdk_bs_open_blob(fs->bs, myfile->blobid, myfs_blob_open_complete, myfile);
+}
+
+static void do_write(void* arg) {
+    struct myfs_file_rwctx_s* ctx = arg;
+    size_t count = ctx->size / fs->unit_size + 1;
+    ctx->file->status = FILE_WRITE;
+    spdk_blob_io_write(ctx->file->blob, fs->channel, ctx->buf, 0, count, myfs_file_write_complete, ctx->file);
+}
+
+static void do_read(void* arg) {
+    struct myfs_file_rwctx_s* ctx = arg;
+    size_t count = ctx->size / fs->unit_size + 1;
+    ctx->file->status = FILE_READ;
+    spdk_blob_io_read(ctx->file->blob, fs->channel, ctx->buf, 0, count, myfs_file_read_complete, ctx->file);
+}
+
+static void do_close(void* arg) {
+    struct myfs_file_s* myfile = arg;
+    myfile->status = FILE_CLOSE;
+    spdk_blob_close(myfile->blob, myfs_file_close_complete, myfile);
+}
+
+static void do_release(void* arg) {
+    struct myfs_file_s* myfile = arg;
+    myfile->status = FILE_RELEASE;
+    spdk_blob_close(myfile->blob, myfs_file_close_complete, myfile);
 }
 
 /*
 #################################
-posix api
+spdk file api
 #################################
 */
 static int myfs_file_create(struct myfs_file_s *file){
     file->done = false;
     poller(fs->thread, do_create, file, &file->done);
-    return 0;
+    return file->ret;
 }
 static int myfs_file_open(struct myfs_file_s *file) {
-    return 0;
+    file->done = false;
+    poller(fs->thread, do_open, file, &file->done);
+    return file->ret;
 }
 static int myfs_file_write(struct myfs_file_s *file, void* buf, size_t size) {
-    return 0;
+    assert(buf != NULL);
+    assert(size > 0);
+
+    struct myfs_file_rwctx_s ctx = {file, buf, size};
+    file->done = false;
+    poller(fs->thread, do_write, &ctx, &file->done);
+    return file->ret;
 }
 static int myfs_file_read(struct myfs_file_s *file, void* buf, size_t size) {
-    return 0;
+    assert(buf != NULL);
+    assert(size > 0);
+
+    struct myfs_file_rwctx_s ctx = {file, buf, size};
+    file->done = false;
+    poller(fs->thread, do_read, &ctx, &file->done);
+    return file->ret;
 }
 
 static off_t myfs_file_lseek(struct myfs_file_s *file, off_t offset, int whence) {
-    return 0;
+    return file->ret;
 }
 
 static int myfs_file_close(struct myfs_file_s *file) {
-    return 0;
+    file->done = false;
+    poller(fs->thread, do_close, file, &file->done);
+    return file->ret;
 }
 static int myfs_file_release(struct myfs_file_s *file) {
-    return 0;
+    file->done = false;
+    poller(fs->thread, do_release, file, &file->done);
+    return file->ret;
 }
 
 struct myfs_file_operation_s myfs_file_opera = {
@@ -201,74 +345,82 @@ static void myfs_bdev_event_callback(enum spdk_bdev_event_type type, struct spdk
     return;
 }
 
-static void spdk_blob_close_complete(void* cb_arg, int bserrno) {
-    return;
-}
-
-static void spdk_bs_delete_blob_complete(void* cb_arg, int bserrno) {
-    return;
-}
 
 
-static void myfs_blob_destory(struct myfs_blob_context_t* ctx) {
-    if (ctx->channel) {
-        spdk_bs_free_io_channel(ctx->channel);
-        ctx->channel = NULL;
-    }
-    if (ctx->blob) {
-        spdk_blob_close(ctx->blob, spdk_blob_close_complete, ctx);
-    }
+/*
+#################################
+depatch spdk file api
+#################################
+*/
 
-    if (ctx->bs) {
-        spdk_bs_delete_blob(ctx->bs, ctx->blobid, spdk_bs_delete_blob_complete, ctx);
-    }
-}
+// static void spdk_blob_close_complete(void* cb_arg, int bserrno) {
+//     return;
+// }
 
-static void myfs_blob_read_complete(void* cb_arg, int bserrno) {
-    struct myfs_blob_context_t* myfs_ctx = (struct myfs_blob_context_t*)cb_arg;
-    SPDK_NOTICELOG("read complete %s\n", myfs_ctx->read_buff);
-
-    //myfs_blob_destory(myfs_ctx);
-    myfs_ctx->done = true;
-    //spdk_app_stop(0);
-}
-
-static void myfs_blob_read(struct myfs_blob_context_t* ctx) {
-    ctx->read_buff = spdk_malloc(ctx->io_unit_size, ALIGN_4k, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-    memset(ctx->read_buff, 0, ALIGN_4k);
-
-    if (ctx->read_buff == NULL) {
-        return;
-    }
-
-    spdk_blob_io_read(ctx->blob, ctx->channel, ctx->read_buff, 0, 1, myfs_blob_read_complete, ctx);
-}
-
-static void myfs_blob_write_complete(void* cb_arg, int bserrno) {
-    struct myfs_blob_context_t* myfs_ctx = (struct myfs_blob_context_t*)cb_arg;
-    SPDK_NOTICELOG("myfs_blob_write_complete---->bserrno: %d\n", bserrno);
-
-    myfs_blob_read(myfs_ctx);
-}
+// static void spdk_bs_delete_blob_complete(void* cb_arg, int bserrno) {
+//     return;
+// }
 
 
-static void myfs_blob_write(struct myfs_blob_context_t* ctx) {
-    ctx->write_buff = spdk_malloc(ctx->io_unit_size, ALIGN_4k, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-    if (ctx->write_buff == NULL) {
-        return;
-    }
-    memset(ctx->write_buff, 'h', ctx->io_unit_size);
+// static void myfs_blob_destory(struct myfs_blob_context_t* ctx) {
+//     if (ctx->channel) {
+//         spdk_bs_free_io_channel(ctx->channel);
+//         ctx->channel = NULL;
+//     }
+//     if (ctx->blob) {
+//         spdk_blob_close(ctx->blob, spdk_blob_close_complete, ctx);
+//     }
 
-    struct spdk_io_channel* channel = spdk_bs_alloc_io_channel(ctx->bs); // 这里虽然是起名字叫alloc 但是其实在app init里面就已经分配好了 这里都是直接拿来用
-    ctx->channel = channel;
+//     if (ctx->bs) {
+//         spdk_bs_delete_blob(ctx->bs, ctx->blobid, spdk_bs_delete_blob_complete, ctx);
+//     }
+// }
 
-    if (ctx->channel == NULL) {
-        return;
-    }
+// static void myfs_blob_read_complete(void* cb_arg, int bserrno) {
+//     struct myfs_blob_context_t* myfs_ctx = (struct myfs_blob_context_t*)cb_arg;
+//     SPDK_NOTICELOG("read complete %s\n", myfs_ctx->read_buff);
 
-    // 写之前要把blob大小做个resize
-    spdk_blob_io_write(ctx->blob, channel, ctx->write_buff, 0, 1, myfs_blob_write_complete, ctx);
-}
+//     //myfs_blob_destory(myfs_ctx);
+//     myfs_ctx->done = true;
+//     //spdk_app_stop(0);
+// }
+
+// static void myfs_blob_read(struct myfs_blob_context_t* ctx) {
+//     ctx->read_buff = spdk_malloc(ctx->io_unit_size, ALIGN_4k, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+//     memset(ctx->read_buff, 0, ALIGN_4k);
+
+//     if (ctx->read_buff == NULL) {
+//         return;
+//     }
+
+//     spdk_blob_io_read(ctx->blob, ctx->channel, ctx->read_buff, 0, 1, myfs_blob_read_complete, ctx);
+// }
+
+// static void myfs_blob_write_complete(void* cb_arg, int bserrno) {
+//     struct myfs_blob_context_t* myfs_ctx = (struct myfs_blob_context_t*)cb_arg;
+//     SPDK_NOTICELOG("myfs_blob_write_complete---->bserrno: %d\n", bserrno);
+
+//     myfs_blob_read(myfs_ctx);
+// }
+
+
+// static void myfs_blob_write(struct myfs_blob_context_t* ctx) {
+//     ctx->write_buff = spdk_malloc(ctx->io_unit_size, ALIGN_4k, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+//     if (ctx->write_buff == NULL) {
+//         return;
+//     }
+//     memset(ctx->write_buff, 'h', ctx->io_unit_size);
+
+//     struct spdk_io_channel* channel = spdk_bs_alloc_io_channel(ctx->bs); // 这里虽然是起名字叫alloc 但是其实在app init里面就已经分配好了 这里都是直接拿来用
+//     ctx->channel = channel;
+
+//     if (ctx->channel == NULL) {
+//         return;
+//     }
+
+//     // 写之前要把blob大小做个resize
+//     spdk_blob_io_write(ctx->blob, channel, ctx->write_buff, 0, 1, myfs_blob_write_complete, ctx);
+// }
 
 // static void myfs_blob_resize_complete(void* cb_arg, int bserrno) {
 //     SPDK_NOTICELOG("myfs_blob_resize_complete----> bserrno: %d\n", bserrno);
@@ -350,7 +502,11 @@ static void myfs_blob_write(struct myfs_blob_context_t* ctx) {
 
 // }
 
-
+/*
+#################################
+spdk file system api
+#################################
+*/
 
 static void json_app_load_done(int rc, void *cb_arg) {
     bool *done = cb_arg;
@@ -405,11 +561,6 @@ static int myfs_spdk_env_init(void) {
     return 0;
 }
 
-
-
-
-
-
 static void myfs_blobstore_init_complete(void* cb_arg, struct spdk_blob_store* bs, int bserrno) {
     struct myfs_s* fs = cb_arg;
 
@@ -439,9 +590,77 @@ static void myfs_alloc(void* arg) {
     
 }
 
-static void myfs_free(void* arg) {
-
+static void myfs_blobstore_destory_complete(void* arg, int bserrno) {
+    struct myfs_s* fs = arg;
+    fs->finished = true;
 }
+
+static void myfs_free(void* arg) {
+    struct myfs_s* fs = arg;
+    //channel
+    spdk_bs_free_io_channel(fs->channel);
+    //bs
+    spdk_bs_destroy(fs->bs, myfs_blobstore_destory_complete, fs);
+    //bs_dev
+
+    SPDK_NOTICELOG("myfs_free--->\n");
+}
+
+struct myfs_operation_s myfs_opera = {
+    .alloc = myfs_alloc,
+    .free = myfs_free
+};
+
+/*
+#################################
+posix api
+#################################
+*/
+
+int myfs_create(const char *filename, int flag) {
+    int fd = get_fd_from_bitmap();
+    struct myfs_file_s* file = (struct myfs_file_s*)malloc(sizeof(struct myfs_file_s));
+    memset(file, 0, sizeof(struct myfs_file_s));
+    file->fs = fs;
+    myfs_file_create(file);
+    files[fd] = file;
+    return fd;
+}
+
+int myfs_open(const char *filename, int flag) {
+    int fd = get_fd_from_bitmap();
+    struct myfs_file_s* file = (struct myfs_file_s*)malloc(sizeof(struct myfs_file_s));
+    memset(file, 0, sizeof(struct myfs_file_s));
+    file->fs = fs;
+    myfs_file_open(file);
+    files[fd] = file;
+    return fd;
+}
+
+size_t myfs_write(int fd, void *buf, size_t count) {
+    struct myfs_file_s* file = files[fd];
+    myfs_file_write(file, buf, count);
+    return file->ret;
+}
+
+size_t myfs_read(int fd, void *buf, size_t count) {
+    struct myfs_file_s* file = files[fd];
+    myfs_file_read(file, buf, count);
+    return file->ret;
+}
+
+int myfs_close(int fd) {
+    struct myfs_file_s* file = files[fd];
+    myfs_file_close(file);
+    set_fd_to_bitmap(fd);
+    return file->ret;
+}
+
+/*
+#################################
+main and test
+#################################
+*/
 
 #if 0
 int main (int argc, char* argv[]) {
@@ -476,16 +695,55 @@ int main(int argc, char* argv[]) {
         myfs_ctx->done = false;
         poller(fs->thread, myfs_blob_start, myfs_ctx, &myfs_ctx->done);
     }
-#else
+#elif 0
+    for (int i = 0; i < 1; i++) {
+        myfs.finished = false;
+        poller(fs->thread, myfs_alloc, &myfs, &myfs.finished);
+
+        struct myfs_file_s file = {0};
+        memset(&file, 0, sizeof(struct myfs_file_s));
+        file.fs = fs;
+
+        myfs_file_create(&file);
+
+        char buffer[1024] = {0};
+        memset(buffer, 'A', 1024);
+        myfs_file_write(&file, buffer, 1024);
+
+        memset(buffer, 0, 1024);
+        myfs_file_read(&file, buffer, 1024);
+        SPDK_NOTICELOG("myfs_file_read---> \n%s\n", buffer);
+
+        myfs_file_release(&file);
+
+        myfs.finished = false;
+        poller(fs->thread, myfs_free, &myfs, &myfs.finished);
+        SPDK_NOTICELOG("end i: %d--->\n", i);
+    }
+#elif 1
     myfs.finished = false;
     poller(fs->thread, myfs_alloc, &myfs, &myfs.finished);
 
-    struct myfs_file_s file = {0};
-    file.fs = fs;
+    int fd = myfs_create("mytest.txt", O_CREAT);
+    //fd = myfs_open("mytest.txt", O_RDWR);
 
-    myfs_file_create(&file);
+    char buffer[1024] = {0};
+    memset(buffer, 'A', 1024);
+    myfs_write(fd, buffer, 1024);
+
+    //myfs_lseek(fd, 0, SEEK_SET);
+
+    memset(buffer, 0, 1024);
+    myfs_read(fd, buffer, 1024);
+    SPDK_NOTICELOG("myfs_file_read---> \n%s\n", buffer);
+
+    myfs_close(fd);
+
+    myfs.finished = false;
+    poller(fs->thread, myfs_free, &myfs, &myfs.finished);   
+    
 #endif
-    SPDK_NOTICELOG("spdk myfs_blob_start--->\n");
+    SPDK_NOTICELOG("end main--->\n");
     return 0;
 }
 
