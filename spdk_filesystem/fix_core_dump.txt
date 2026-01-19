@@ -1,0 +1,85 @@
+hugo@hugo:~/learn_spdk/spdk_filesystem$ ./myfs
+段错误 (核心已转储)
+hugo@hugo:~/learn_spdk/spdk_filesystem$ make
+  CC spdk_filesystem/myfs.o
+myfs.c: In function ‘write’:
+myfs.c:726:27: warning: passing argument 2 of ‘myfs_write’ discards ‘const’ qualifier from pointer target type [-Wdiscarded-qualifiers]
+  726 |     return myfs_write(fd, buf, count);
+      |                           ^~~
+myfs.c:641:33: note: expected ‘void *’ but argument is of type ‘const void *’
+  641 | size_t myfs_write(int fd, void *buf, size_t count) {
+      |                           ~~~~~~^~~
+myfs.c: At top level:
+myfs.c:673:12: warning: ‘myfs_destory’ defined but not used [-Wunused-function]
+  673 | static int myfs_destory(void) {
+      |            ^~~~~~~~~~~~
+  CC spdk_filesystem/json_config.o
+  LINK myfs
+hugo@hugo:~/learn_spdk/spdk_filesystem$ ./myfs
+段错误 (核心已转储)
+hugo@hugo:~/learn_spdk/spdk_filesystem$ gdb ./myfs
+GNU gdb (Ubuntu 15.0.50.20240403-0ubuntu1) 15.0.50.20240403-git
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from ./myfs...
+(gdb) run
+Starting program: /home/hugo/learn_spdk/spdk_filesystem/myfs 
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.ubuntu.com>
+Enable debuginfod for this session? (y or [n]) y
+Debuginfod has been enabled.
+To make this setting permanent, add 'set debuginfod enabled on' to .gdbinit.
+Downloading separate debug info for system-supplied DSO at 0x7ffff7fc3000
+Downloading separate debug info for /lib/x86_64-linux-gnu/libnuma.so.1                                                                                                     
+Downloading separate debug info for /lib/x86_64-linux-gnu/libuuid.so.1                                                                                                     
+Downloading separate debug info for /lib/x86_64-linux-gnu/libssl.so.3                                                                                                      
+Downloading separate debug info for /lib/x86_64-linux-gnu/libcrypto.so.3                                                                                                   
+Downloading separate debug info for /lib/x86_64-linux-gnu/libfuse3.so.3                                                                                                    
+Downloading separate debug info for /lib/x86_64-linux-gnu/libkeyutils.so.1                                                                                                 
+Downloading separate debug info for /lib/x86_64-linux-gnu/libaio.so.1t64                                                                                                   
+[Thread debugging using libthread_db enabled]                                                                                                                              
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00005555556a926f in spdk_thread_send_msg (thread=thread@entry=0x0, fn=fn@entry=0x55555559e250 <do_open>, ctx=ctx@entry=0x555555ba4280) at thread.c:1424
+1424            if (spdk_unlikely(thread->state == SPDK_THREAD_STATE_EXITED)) {
+(gdb) bt
+#0  0x00005555556a926f in spdk_thread_send_msg (thread=thread@entry=0x0, fn=fn@entry=0x55555559e250 <do_open>, ctx=ctx@entry=0x555555ba4280) at thread.c:1424
+#1  0x000055555559e5c4 in poller (thread=0x0, fn=fn@entry=0x55555559e250 <do_open>, ctx=ctx@entry=0x555555ba4280, done=done@entry=0x555555ba4328) at myfs.c:159
+#2  0x000055555559eb48 in myfs_file_open (file=0x555555ba4280) at myfs.c:296
+#3  myfs_open (filename=<optimized out>, flag=<optimized out>) at myfs.c:636
+#4  0x000055555559eb9a in open (pathname=<optimized out>, flags=<optimized out>) at myfs.c:717 << spdk 需要 调用 posix open， 但是此时已经被 hook到myfs_open 这里需要处理一下
+#5  0x00007ffff7a222c6 in ?? () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#6  0x00007ffff7a1e45d in ?? () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#7  0x00007ffff74a1ed3 in __pthread_once_slow (once_control=0x7ffff7d100ec, init_routine=0x7ffff7a1e450) at ./nptl/pthread_once.c:116
+#8  0x00007ffff7a306ad in CRYPTO_THREAD_run_once () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#9  0x00007ffff7a1e491 in ?? () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#10 0x00007ffff7a1e63c in ?? () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#11 0x00007ffff74a1ed3 in __pthread_once_slow (once_control=0x7ffff7d0ff08, init_routine=0x7ffff7a1e600) at ./nptl/pthread_once.c:116
+#12 0x00007ffff7a306ad in CRYPTO_THREAD_run_once () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#13 0x00007ffff7a1e88b in OSSL_LIB_CTX_get0_global_default () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#14 0x00007ffff7946040 in ?? () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#15 0x00007ffff7a225e4 in ?? () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#16 0x00007ffff74a1ed3 in __pthread_once_slow (once_control=0x7ffff7d103b8, init_routine=0x7ffff7a225d0) at ./nptl/pthread_once.c:116
+#17 0x00007ffff7a306ad in CRYPTO_THREAD_run_once () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#18 0x00007ffff7a22d12 in OPENSSL_init_crypto () from /lib/x86_64-linux-gnu/libcrypto.so.3
+#19 0x00007ffff7f1e6ed in OPENSSL_init_ssl () from /lib/x86_64-linux-gnu/libssl.so.3
+#20 0x0000555555664caf in spdk_env_init (opts_user=opts_user@entry=0x7fffffffd8c0) at init.c:754
+#21 0x000055555559e6b8 in myfs_spdk_env_init () at myfs.c:532
+#22 myfs_setup () at myfs.c:665
+#23 0x000055555559ed61 in creat (pathname=pathname@entry=0x55555588a419 "mytest.txt", mode=mode@entry=511) at myfs.c:708
+#24 0x0000555555595e6d in main (argc=<optimized out>, argv=<optimized out>) at myfs.c:824
+(gdb) 

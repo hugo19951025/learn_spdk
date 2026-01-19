@@ -1,0 +1,15 @@
+hugo@hugo:~/learn_spdk/spdk_filesystem$ ./myfs 
+EAL: '-c <coremask>' option is deprecated, and will be removed in a future release
+EAL:    Use '-l <corelist>' or '--lcores=<corelist>' option instead
+[2026-01-19 19:31:06.202447] myfs.c: 539:myfs_spdk_env_init: *NOTICE*: Thread library initialized
+[2026-01-19 19:31:06.293879] myfs.c: 658:myfs_setup: *NOTICE*: spdk env init--->
+[2026-01-19 19:31:06.308092] myfs.c: 186:myfs_blob_create_complete: *NOTICE*: spdk_blob_create_complete----> blobid: 4294967296
+[2026-01-19 19:31:06.308166] myfs.c: 179:myfs_blob_open_complete: *NOTICE*: spdk_blob_open_complete----> numfreed: 15
+[2026-01-19 19:31:06.308181] myfs.c: 168:myfs_blob_resize_complete: *NOTICE*: myfs_blob_resize_complete----> bserrno: 0
+[2026-01-19 19:31:06.308202] myfs.c: 205:myfs_file_write_complete: *NOTICE*: myfs_file_write_complete---->bserrno: 0
+ret = 0
+[2026-01-19 19:31:06.308215] myfs.c: 211:myfs_file_read_complete: *NOTICE*: myfs_file_read_complete---->bserrno: 0
+ret = 0
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
+[2026-01-19 19:31:06.308233] myfs.c: 224:myfs_file_close_complete: *NOTICE*: myfs_file_close_complete---->bserrno: 0
+hugo@hugo:~/learn_spdk/spdk_filesystem$ 

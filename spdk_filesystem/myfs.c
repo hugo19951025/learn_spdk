@@ -1,4 +1,3 @@
-
 #include "spdk/env.h"
 #include "spdk/event.h"
 #include "spdk/log.h"
@@ -15,15 +14,10 @@
 #include "spdk/rpc.h"
 #include "spdk/string.h"
 #include "../spdk/lib/blob/blobstore.h"
-
 #include "spdk/thread.h"
 
 #include "internal.h"
-
-
-#include <stdio.h>
-#include <stdint.h>
-
+#include "myfs.h"
 
 #define BDEV_NAME_LENGTH 128
 #define ALIGN_4k 0x1000
@@ -114,6 +108,7 @@ static const int POLLER_MAX_TIME = 1e8;
 static const char* json_file = "/home/hugo/learn_spdk/spdk_filesystem/myfs.json";
 static unsigned char fd_table[FD_TABLE_SIZE] = {0};
 static struct myfs_file_s* files[MAX_FD_COUNT] = {0};
+static bool initilized = false;
 
 /*
 #################################
@@ -197,9 +192,7 @@ static void myfs_blob_create_complete(void* arg, spdk_blob_id blobid, int bserrn
 
 static void myfs_bs_get_super_complete(void* arg, spdk_blob_id blobid, int bserrno) {
     struct myfs_file_s* myfile = arg;
-
     if (bserrno) {
-        SPDK_ERRLOG("Super blob get failed, bserrno %d\n", bserrno);
         if (bserrno == -ENOENT) {
             spdk_bs_create_blob(fs->bs, myfs_blob_create_complete, myfile);
         }
@@ -349,7 +342,7 @@ static void myfs_bdev_event_callback(enum spdk_bdev_event_type type, struct spdk
 
 /*
 #################################
-depatch spdk file api
+deprecated spdk file api
 #################################
 */
 
@@ -613,7 +606,7 @@ struct myfs_operation_s myfs_opera = {
 
 /*
 #################################
-posix api
+vfs external api
 #################################
 */
 
@@ -656,6 +649,117 @@ int myfs_close(int fd) {
     return file->ret;
 }
 
+static int myfs_setup(void) {
+    struct myfs_s* myfs = (struct myfs_s*)malloc(sizeof(struct myfs_s));
+    assert(myfs != NULL);
+    memset(myfs, 0, sizeof(struct myfs_s));
+    fs = myfs;
+    myfs_spdk_env_init();
+    SPDK_NOTICELOG("spdk env init--->\n");
+
+    myfs->finished = false;
+    poller(fs->thread, myfs_alloc, myfs, &(myfs->finished));
+    return 0;
+}
+
+static int myfs_destory(void) {
+    fs->finished = false;
+    poller(fs->thread, myfs_free, fs, &(fs->finished));
+    free(fs);
+    fs = NULL;
+    return 0;
+}
+
+/*
+#################################
+posix api
+#################################
+*/
+
+// hook
+typedef int (*creat_t)(const char* pathname, mode_t mode);
+creat_t creat_f = NULL;
+
+typedef int (*open_t)(const char* pathname, int flags);
+open_t open_f = NULL;
+
+typedef ssize_t (*read_t)(int fd, void* buf, size_t count);
+read_t read_f = NULL;
+
+typedef ssize_t (*write_t)(int fd, const void* buf, size_t count);
+write_t write_f = NULL;
+
+typedef off_t (*lseek_t)(int fd, off_t offset, int whence);
+lseek_t lseek_f = NULL;
+
+typedef int (*close_t)(int fd);
+close_t close_f = NULL;
+
+int creat(const char* pathname, mode_t mode) {
+    int ret = 0;
+    if (!initilized) {
+        if (fs == NULL) {
+            myfs_setup();
+        }
+        initilized = true;
+        ret = myfs_create(pathname, mode);
+    } else {
+        ret = syscall(__NR_creat, pathname, mode);
+    }
+
+    return ret;
+}
+
+int open(const char* pathname, int flags, ...) {
+    int ret = 0;
+    if (initilized) {
+        if (fs == NULL) {
+            myfs_setup();
+        }
+        ret = myfs_open(pathname, flags);
+    } else {
+        ret = syscall(__NR_open, pathname, flags);
+    }
+    return ret;
+}
+
+ssize_t read(int fd, void* buf, size_t count) {
+    ssize_t ret = 0;
+    struct myfs_file_s* file = files[fd];
+    if (initilized && file) {
+        ret = myfs_read(fd, buf, count);
+    } else {
+        ret = syscall(__NR_read, fd, buf, count);
+    }
+    return ret;
+}
+
+ssize_t write(int fd, const void* buf, size_t count) {
+    ssize_t ret = 0;
+    struct myfs_file_s* file = files[fd];
+    if (initilized && file) {
+        ret = myfs_write(fd, buf, count);
+    } else {
+        ret = syscall(__NR_write, fd, buf, count);
+    }
+    return ret;
+}
+
+off_t lseek(int fd, off_t offset, int whence) {
+    return 0;
+}
+
+int close(int fd) {
+    int ret = 0;
+    struct myfs_file_s* file = files[fd];
+    if (initilized && file) {
+        ret = myfs_close(fd);
+    } else {
+        ret = syscall(__NR_close, fd);
+    }
+    return ret;
+}
+
 /*
 #################################
 main and test
@@ -684,10 +788,10 @@ int main (int argc, char* argv[]) {
 }
 #elif 1
 int main(int argc, char* argv[]) {
-    struct myfs_s myfs;
-    fs = &myfs;
-    myfs_spdk_env_init();
-    SPDK_NOTICELOG("spdk env init--->\n");
+    // struct myfs_s myfs;
+    // fs = &myfs;
+    // myfs_spdk_env_init();
+    // SPDK_NOTICELOG("spdk env init--->\n");
 
 #if 0
     struct myfs_blob_context_t *myfs_ctx = calloc(1, sizeof(struct myfs_blob_context_t));
@@ -720,7 +824,7 @@ int main(int argc, char* argv[]) {
         poller(fs->thread, myfs_free, &myfs, &myfs.finished);
         SPDK_NOTICELOG("end i: %d--->\n", i);
     }
-#elif 1
+#elif 0
     myfs.finished = false;
     poller(fs->thread, myfs_alloc, &myfs, &myfs.finished);
 
@@ -741,9 +845,23 @@ int main(int argc, char* argv[]) {
 
     myfs.finished = false;
     poller(fs->thread, myfs_free, &myfs, &myfs.finished);   
-    
+
+#elif 1
+    int fd = creat("mytest.txt", 0777);
+
+    char buffer[129] = {0};
+    memset(buffer, 'H', 128);
+    int ret = write(fd, buffer, 128);
+    printf("ret = %d\n", ret);
+
+    memset(buffer, 0, 128);
+    ret = read(fd, buffer, 128);
+    printf("ret = %d\n", ret);
+
+    printf("%s\n", buffer);
+
+    close(fd);
 #endif
-    SPDK_NOTICELOG("end main--->\n");
     return 0;
 }
 
