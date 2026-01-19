@@ -1,3 +1,5 @@
+spdk的版本是v26.01-pre
+
 hugo@hugo:~/learn_spdk/spdk_filesystem$ ./myfs 
 EAL: '-c <coremask>' option is deprecated, and will be removed in a future release
 EAL:    Use '-l <corelist>' or '--lcores=<corelist>' option instead
